@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "module": "None",
+    "lib": ["ES2017"],
+    "strict": true,
+    "skipLibCheck": true,
+    "outFile": "code.js",
+    "typeRoots": ["../node_modules/@figma"]
+  },
+  "include": ["code.ts"],
+  "files": ["../node_modules/@figma/plugin-typings/index.d.ts"]
+}

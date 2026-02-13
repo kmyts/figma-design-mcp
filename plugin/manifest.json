@@ -1,0 +1,10 @@
+{
+  "name": "Design from Claude",
+  "id": "figma-design-from-claude",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "capabilities": ["inspect"],
+  "enableProposedApi": false,
+  "editorType": ["figma", "dev"]
+}

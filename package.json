@@ -1,0 +1,15 @@
+{
+  "name": "figma-design-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server + Figma plugin for creating designs in Figma from Claude",
+  "scripts": {
+    "build": "cd server && npm run build && cd ../plugin && npx tsc",
+    "build:server": "cd server && npm run build",
+    "build:plugin": "cd plugin && npx tsc"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.123.0",
+    "typescript": "^5.9.3"
+  }
+}

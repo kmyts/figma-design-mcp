@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Inter, -apple-system, sans-serif;
+    font-size: 12px;
+    color: #333;
+    padding: 12px;
+    background: #fff;
+  }
+  h2 { font-size: 14px; margin-bottom: 8px; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-weight: 600; margin-bottom: 4px; color: #555; }
+  .field input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: monospace;
+  }
+  .field input:focus { outline: none; border-color: #18a0fb; }
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    font-weight: 500;
+  }
+  .status-bar .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-bar.disconnected { background: #ffebee; color: #c62828; }
+  .status-bar.disconnected .dot { background: #c62828; }
+  .status-bar.connected { background: #e8f5e9; color: #2e7d32; }
+  .status-bar.connected .dot { background: #2e7d32; }
+  .status-bar.busy { background: #e3f2fd; color: #1565c0; }
+  .status-bar.busy .dot { background: #1565c0; }
+  .log {
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: monospace;
+    font-size: 11px;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+  }
+  .log .entry { margin-bottom: 2px; }
+  .log .time { color: #999; }
+  .log .cmd { color: #1565c0; }
+  .log .ok { color: #2e7d32; }
+  .log .err { color: #c62828; }
+  .log .info { color: #666; }
+  .actions { margin-bottom: 10px; }
+  .actions button {
+    padding: 6px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 11px;
+    cursor: pointer;
+    margin-right: 4px;
+  }
+  .actions button:hover { background: #f5f5f5; }
+</style>
+</head>
+<body>
+  <h2>Design from Claude</h2>
+
+  <div class="field">
+    <label>Server URL</label>
+    <input type="text" id="serverUrl" value="http://localhost:3848" />
+  </div>
+
+  <div id="statusBar" class="status-bar disconnected">
+    <div class="dot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+
+  <div class="actions">
+    <button id="btnClear">Clear Log</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+<script>
+  const serverUrlEl = document.getElementById('serverUrl');
+  const statusBar = document.getElementById('statusBar');
+  const statusText = document.getElementById('statusText');
+  const logEl = document.getElementById('log');
+  const btnClear = document.getElementById('btnClear');
+
+  let polling = true;
+  let connected = false;
+  let busyCommandId = null;
+  let pollTimer = null;
+
+  function getServerUrl() {
+    return serverUrlEl.value.replace(/\/+$/, '');
+  }
+
+  function log(msg, cls) {
+    const t = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+    entry.innerHTML = '<span class="time">' + t + '</span> <span class="' + (cls || 'info') + '">' + escapeHtml(msg) + '</span>';
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function setStatus(state, text) {
+    statusBar.className = 'status-bar ' + state;
+    statusText.textContent = text;
+  }
+
+  btnClear.onclick = () => { logEl.innerHTML = ''; };
+
+  // ── Polling loop ───────────────────────────────────────────────────
+
+  async function poll() {
+    if (!polling || busyCommandId) return;
+
+    try {
+      const res = await fetch(getServerUrl() + '/commands/poll');
+
+      if (!connected) {
+        connected = true;
+        setStatus('connected', 'Connected — waiting for commands');
+        log('Connected to server', 'ok');
+      }
+
+      if (res.status === 204) {
+        // No pending commands
+        return;
+      }
+
+      const command = await res.json();
+      busyCommandId = command.id;
+      setStatus('busy', 'Executing: ' + command.type);
+      log('Received: ' + command.type + ' (' + command.id.slice(0, 8) + '…)', 'cmd');
+
+      // If the command creates nodes with IMAGE fills, pre-fetch images
+      if (command.type === 'create_nodes' && command.payload && command.payload.nodes) {
+        await prefetchImages(command.payload.nodes);
+      }
+
+      // Send command to plugin code.ts
+      parent.postMessage({ pluginMessage: { type: 'execute-command', command: command } }, '*');
+
+    } catch (err) {
+      if (connected) {
+        connected = false;
+        setStatus('disconnected', 'Disconnected');
+        log('Connection lost: ' + err.message, 'err');
+      }
+    }
+  }
+
+  // ── Image prefetch ────────────────────────────────────────────────
+
+  async function prefetchImages(nodes) {
+    for (const node of nodes) {
+      if (node.fills) {
+        for (let i = 0; i < node.fills.length; i++) {
+          const fill = node.fills[i];
+          if (fill.type === 'IMAGE' && fill.imageUrl) {
+            try {
+              log('Fetching image: ' + fill.imageUrl.slice(0, 50) + '…', 'info');
+              const resp = await fetch(fill.imageUrl);
+              const buf = await resp.arrayBuffer();
+              const bytes = Array.from(new Uint8Array(buf));
+              const tempKey = (node.tempId || 'node') + '_fill_' + i;
+
+              // Send image bytes to plugin code
+              parent.postMessage({
+                pluginMessage: { type: 'image-data', imageData: { tempKey: tempKey, bytes: bytes } }
+              }, '*');
+
+              // Wait for code.ts to create the image and return hash
+              const hash = await waitForImageReady(tempKey);
+              fill.imageRef = hash;
+              delete fill.imageUrl;
+              log('Image ready: ' + tempKey, 'ok');
+            } catch (err) {
+              log('Image fetch failed: ' + err.message, 'err');
+            }
+          }
+        }
+      }
+      if (node.children) {
+        await prefetchImages(node.children);
+      }
+    }
+  }
+
+  function waitForImageReady(tempKey) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Image timeout')), 10000);
+      const handler = (event) => {
+        const msg = event.data.pluginMessage;
+        if (msg && msg.type === 'image-ready' && msg.tempKey === tempKey) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', handler);
+          resolve(msg.hash);
+        }
+      };
+      window.addEventListener('message', handler);
+    });
+  }
+
+  // ── Receive results from plugin code ────────────────────────────
+
+  window.onmessage = async (event) => {
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+
+    if (msg.type === 'command-result') {
+      const cmdId = msg.id;
+      const success = msg.success;
+
+      if (success) {
+        log('Completed: ' + cmdId.slice(0, 8) + '…', 'ok');
+      } else {
+        log('Failed: ' + (msg.error || 'unknown error'), 'err');
+      }
+
+      // Post result back to server
+      try {
+        await fetch(getServerUrl() + '/commands/' + cmdId + '/result', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            success: success,
+            result: msg.result,
+            error: msg.error,
+          }),
+        });
+      } catch (err) {
+        log('Failed to post result: ' + err.message, 'err');
+      }
+
+      busyCommandId = null;
+      setStatus('connected', 'Connected — waiting for commands');
+    }
+
+    // image-ready is handled by the waitForImageReady promise
+  };
+
+  // ── Start polling ──────────────────────────────────────────────
+
+  setInterval(poll, 500);
+  poll(); // Immediate first poll
+
+  log('Plugin started', 'info');
+</script>
+</body>
+</html>
