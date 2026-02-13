@@ -76,8 +76,6 @@ interface Command {
   payload: any;
 }
 
-const pendingImages = new Map<string, string>();
-
 figma.ui.onmessage = async (msg: { type: string; command?: Command; imageData?: { tempKey: string; bytes: number[] } }) => {
   if (msg.type === 'execute-command' && msg.command) {
     const cmd = msg.command;
@@ -90,7 +88,6 @@ figma.ui.onmessage = async (msg: { type: string; command?: Command; imageData?: 
   } else if (msg.type === 'image-data' && msg.imageData) {
     const bytes = new Uint8Array(msg.imageData.bytes);
     const image = figma.createImage(bytes);
-    pendingImages.set(msg.imageData.tempKey, image.hash);
     figma.ui.postMessage({ type: 'image-ready', tempKey: msg.imageData.tempKey, hash: image.hash });
   }
 };
@@ -522,9 +519,15 @@ function handleDeleteNodes(payload: { nodeIds: string[] }): unknown {
   return { results };
 }
 
-function handleGetNodeInfo(payload: { nodeId: string }): unknown {
-  const node = requireNode(payload.nodeId);
+function isMixed(value: unknown): boolean {
+  return typeof value === 'symbol';
+}
 
+function safeValue(value: unknown, mixedLabel = 'MIXED'): unknown {
+  return isMixed(value) ? mixedLabel : value;
+}
+
+function collectNodeInfo(node: BaseNode): Record<string, unknown> {
   const info: Record<string, unknown> = {
     id: node.id,
     type: node.type,
@@ -538,11 +541,11 @@ function handleGetNodeInfo(payload: { nodeId: string }): unknown {
   if ('rotation' in node) info.rotation = (node as FrameNode).rotation;
   if ('opacity' in node) info.opacity = (node as FrameNode).opacity;
   if ('visible' in node) info.visible = (node as SceneNode).visible;
-  if ('fills' in node) info.fills = (node as GeometryMixin).fills;
-  if ('strokes' in node) info.strokes = (node as GeometryMixin).strokes;
-  if ('strokeWeight' in node) info.strokeWeight = (node as GeometryMixin).strokeWeight;
-  if ('effects' in node) info.effects = (node as BlendMixin).effects;
-  if ('cornerRadius' in node) info.cornerRadius = (node as RectangleNode).cornerRadius;
+  if ('fills' in node) info.fills = safeValue((node as GeometryMixin).fills);
+  if ('strokes' in node) info.strokes = safeValue((node as GeometryMixin).strokes);
+  if ('strokeWeight' in node) info.strokeWeight = safeValue((node as GeometryMixin).strokeWeight);
+  if ('effects' in node) info.effects = safeValue((node as BlendMixin).effects);
+  if ('cornerRadius' in node) info.cornerRadius = safeValue((node as RectangleNode).cornerRadius);
   if ('layoutMode' in node) info.layoutMode = (node as FrameNode).layoutMode;
   if ('children' in node) {
     info.children = ((node as any).children as SceneNode[]).map((c: SceneNode) => ({
@@ -554,11 +557,16 @@ function handleGetNodeInfo(payload: { nodeId: string }): unknown {
   if (node.type === 'TEXT') {
     const t = node as TextNode;
     info.characters = t.characters;
-    info.fontSize = t.fontSize;
-    info.fontName = t.fontName;
+    info.fontSize = safeValue(t.fontSize);
+    info.fontName = safeValue(t.fontName);
   }
 
   return info;
+}
+
+function handleGetNodeInfo(payload: { nodeId: string }): unknown {
+  const node = requireNode(payload.nodeId);
+  return collectNodeInfo(node);
 }
 
 function handleListPages(): unknown {
@@ -619,7 +627,11 @@ function handleGetSelection(): unknown {
   }
 
   return {
-    nodes: selection.map(node => nodeAnnotationSummary(node)),
+    nodes: selection.map(node => ({
+      ...collectNodeInfo(node),
+      annotations: extractNodeArray(node, 'annotations'),
+      reactions: extractNodeArray(node, 'reactions'),
+    })),
   };
 }
 

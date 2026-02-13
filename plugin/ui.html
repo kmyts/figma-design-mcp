@@ -103,7 +103,7 @@
   let polling = true;
   let connected = false;
   let busyCommandId = null;
-  let pollTimer = null;
+  let busyStartedAt = null;
 
   function getServerUrl() {
     return serverUrlEl.value.replace(/\/+$/, '');
@@ -150,16 +150,32 @@
 
       const command = await res.json();
       busyCommandId = command.id;
+      busyStartedAt = Date.now();
       setStatus('busy', 'Executing: ' + command.type);
       log('Received: ' + command.type + ' (' + command.id.slice(0, 8) + '…)', 'cmd');
 
-      // If the command creates nodes with IMAGE fills, pre-fetch images
-      if (command.type === 'create_nodes' && command.payload && command.payload.nodes) {
-        await prefetchImages(command.payload.nodes);
-      }
+      try {
+        // If the command creates nodes with IMAGE fills, pre-fetch images
+        if (command.type === 'create_nodes' && command.payload && command.payload.nodes) {
+          await prefetchImages(command.payload.nodes);
+        }
 
-      // Send command to plugin code.ts
-      parent.postMessage({ pluginMessage: { type: 'execute-command', command: command } }, '*');
+        // Send command to plugin code.ts
+        parent.postMessage({ pluginMessage: { type: 'execute-command', command: command } }, '*');
+      } catch (prefetchErr) {
+        log('Prefetch/dispatch failed: ' + prefetchErr.message, 'err');
+        // Report error back to server so the MCP call doesn't hang
+        try {
+          await fetch(getServerUrl() + '/commands/' + command.id + '/result', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ success: false, error: 'Plugin UI error: ' + prefetchErr.message }),
+          });
+        } catch (_) { /* server unreachable, will reconnect */ }
+        busyCommandId = null;
+        busyStartedAt = null;
+        setStatus('connected', 'Connected — waiting for commands');
+      }
 
     } catch (err) {
       if (connected) {
@@ -254,11 +270,33 @@
       }
 
       busyCommandId = null;
+      busyStartedAt = null;
       setStatus('connected', 'Connected — waiting for commands');
     }
 
     // image-ready is handled by the waitForImageReady promise
   };
+
+  // ── Safety timeout — auto-reset if a command stalls for 30s ──
+
+  const BUSY_TIMEOUT_MS = 30000;
+  setInterval(async () => {
+    if (busyCommandId && busyStartedAt && (Date.now() - busyStartedAt > BUSY_TIMEOUT_MS)) {
+      const timedOutId = busyCommandId;
+      log('Command ' + timedOutId.slice(0, 8) + '… timed out in plugin (30s), resetting', 'err');
+      // Report failure to server so it doesn't re-serve the same command
+      try {
+        await fetch(getServerUrl() + '/commands/' + timedOutId + '/result', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ success: false, error: 'Command timed out in Figma plugin (30s)' }),
+        });
+      } catch (_) { /* server unreachable */ }
+      busyCommandId = null;
+      busyStartedAt = null;
+      setStatus('connected', 'Connected — waiting for commands');
+    }
+  }, 2000);
 
   // ── Start polling ──────────────────────────────────────────────
 

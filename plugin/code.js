@@ -1,6 +1,5 @@
 "use strict";
 figma.showUI(__html__, { width: 360, height: 400 });
-const pendingImages = new Map();
 figma.ui.onmessage = async (msg) => {
     if (msg.type === 'execute-command' && msg.command) {
         const cmd = msg.command;
@@ -15,7 +14,6 @@ figma.ui.onmessage = async (msg) => {
     else if (msg.type === 'image-data' && msg.imageData) {
         const bytes = new Uint8Array(msg.imageData.bytes);
         const image = figma.createImage(bytes);
-        pendingImages.set(msg.imageData.tempKey, image.hash);
         figma.ui.postMessage({ type: 'image-ready', tempKey: msg.imageData.tempKey, hash: image.hash });
     }
 };
@@ -444,8 +442,13 @@ function handleDeleteNodes(payload) {
     }
     return { results };
 }
-function handleGetNodeInfo(payload) {
-    const node = requireNode(payload.nodeId);
+function isMixed(value) {
+    return typeof value === 'symbol';
+}
+function safeValue(value, mixedLabel = 'MIXED') {
+    return isMixed(value) ? mixedLabel : value;
+}
+function collectNodeInfo(node) {
     const info = {
         id: node.id,
         type: node.type,
@@ -466,15 +469,15 @@ function handleGetNodeInfo(payload) {
     if ('visible' in node)
         info.visible = node.visible;
     if ('fills' in node)
-        info.fills = node.fills;
+        info.fills = safeValue(node.fills);
     if ('strokes' in node)
-        info.strokes = node.strokes;
+        info.strokes = safeValue(node.strokes);
     if ('strokeWeight' in node)
-        info.strokeWeight = node.strokeWeight;
+        info.strokeWeight = safeValue(node.strokeWeight);
     if ('effects' in node)
-        info.effects = node.effects;
+        info.effects = safeValue(node.effects);
     if ('cornerRadius' in node)
-        info.cornerRadius = node.cornerRadius;
+        info.cornerRadius = safeValue(node.cornerRadius);
     if ('layoutMode' in node)
         info.layoutMode = node.layoutMode;
     if ('children' in node) {
@@ -487,10 +490,14 @@ function handleGetNodeInfo(payload) {
     if (node.type === 'TEXT') {
         const t = node;
         info.characters = t.characters;
-        info.fontSize = t.fontSize;
-        info.fontName = t.fontName;
+        info.fontSize = safeValue(t.fontSize);
+        info.fontName = safeValue(t.fontName);
     }
     return info;
+}
+function handleGetNodeInfo(payload) {
+    const node = requireNode(payload.nodeId);
+    return collectNodeInfo(node);
 }
 function handleListPages() {
     return {
@@ -546,7 +553,7 @@ function handleGetSelection() {
         return { nodes: [], message: 'Nothing selected' };
     }
     return {
-        nodes: selection.map(node => nodeAnnotationSummary(node)),
+        nodes: selection.map(node => (Object.assign(Object.assign({}, collectNodeInfo(node)), { annotations: extractNodeArray(node, 'annotations'), reactions: extractNodeArray(node, 'reactions') }))),
     };
 }
 function handleScanAnnotations(payload) {
