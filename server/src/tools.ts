@@ -77,6 +77,22 @@ export const tools = [
     },
   },
   {
+    name: 'get_nodes_info',
+    description:
+      'Read properties of multiple Figma nodes in a single call. Returns an array of node info objects. More efficient than calling get_node_info repeatedly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of Figma node IDs to inspect.',
+        },
+      },
+      required: ['nodeIds'],
+    },
+  },
+  {
     name: 'list_pages',
     description: 'List all pages in the current Figma file with their IDs and names.',
     inputSchema: {
@@ -263,6 +279,10 @@ export const tools = [
         maxResults: {
           type: 'number',
           description: 'Maximum number of results to return. Defaults to 100.',
+        },
+        offset: {
+          type: 'number',
+          description: 'Number of results to skip for pagination. Defaults to 0.',
         },
       },
     },

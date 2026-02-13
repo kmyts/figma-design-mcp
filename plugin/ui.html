@@ -155,9 +155,12 @@
       log('Received: ' + command.type + ' (' + command.id.slice(0, 8) + '…)', 'cmd');
 
       try {
-        // If the command creates nodes with IMAGE fills, pre-fetch images
+        // Pre-fetch images for commands that may contain IMAGE fills
         if (command.type === 'create_nodes' && command.payload && command.payload.nodes) {
           await prefetchImages(command.payload.nodes);
+        }
+        if (command.type === 'update_nodes' && command.payload && command.payload.updates) {
+          await prefetchImages(command.payload.updates.map(function(u) { return u.properties || {}; }));
         }
 
         // Send command to plugin code.ts

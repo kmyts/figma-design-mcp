@@ -27,6 +27,8 @@ async function executeCommand(cmd) {
             return handleDeleteNodes(cmd.payload);
         case 'get_node_info':
             return handleGetNodeInfo(cmd.payload);
+        case 'get_nodes_info':
+            return handleGetNodesInfo(cmd.payload);
         case 'list_pages':
             return handleListPages();
         case 'set_current_page':
@@ -492,12 +494,48 @@ function collectNodeInfo(node) {
         info.characters = t.characters;
         info.fontSize = safeValue(t.fontSize);
         info.fontName = safeValue(t.fontName);
+        if (isMixed(t.fontSize) || isMixed(t.fontName) || isMixed(t.fills)) {
+            info.segments = extractTextSegments(t);
+        }
     }
     return info;
+}
+function extractTextSegments(textNode) {
+    const fields = ['fontName', 'fontSize', 'fills', 'textDecoration', 'textCase', 'lineHeight', 'letterSpacing'];
+    const segments = textNode.getStyledTextSegments(fields);
+    return segments.map(seg => ({
+        start: seg.start,
+        end: seg.end,
+        characters: seg.characters,
+        fontName: seg.fontName,
+        fontSize: seg.fontSize,
+        fills: seg.fills,
+        textDecoration: seg.textDecoration,
+        textCase: seg.textCase,
+        lineHeight: seg.lineHeight,
+        letterSpacing: seg.letterSpacing,
+    }));
 }
 function handleGetNodeInfo(payload) {
     const node = requireNode(payload.nodeId);
     return collectNodeInfo(node);
+}
+function handleGetNodesInfo(payload) {
+    const results = [];
+    for (const nodeId of payload.nodeIds) {
+        try {
+            const node = figma.getNodeById(nodeId);
+            if (!node) {
+                results.push({ nodeId, success: false, error: 'Node not found' });
+                continue;
+            }
+            results.push({ nodeId, success: true, data: collectNodeInfo(node) });
+        }
+        catch (err) {
+            results.push({ nodeId, success: false, error: err.message });
+        }
+    }
+    return { results };
 }
 function handleListPages() {
     return {
@@ -695,6 +733,8 @@ function handleCreateFromSvg(payload) {
 function handleFindNodes(payload) {
     var _a, _b;
     const maxResults = payload.maxResults || 100;
+    const offset = payload.offset || 0;
+    const limit = offset + maxResults;
     const root = payload.parentNodeId
         ? requireNode(payload.parentNodeId)
         : figma.currentPage;
@@ -702,18 +742,24 @@ function handleFindNodes(payload) {
         throw new Error(`Node ${root.id} does not support findAll`);
     const queryLower = (_a = payload.query) === null || _a === void 0 ? void 0 : _a.toLowerCase();
     const typeFilter = (_b = payload.type) === null || _b === void 0 ? void 0 : _b.toUpperCase();
-    const matches = [];
+    const allMatches = [];
+    let hasMore = false;
     root.findAll((node) => {
-        if (matches.length >= maxResults)
+        if (allMatches.length > limit) {
+            hasMore = true;
             return false;
+        }
         if (typeFilter && node.type !== typeFilter)
             return false;
         if (queryLower && !node.name.toLowerCase().includes(queryLower))
             return false;
-        matches.push({ id: node.id, name: node.name, type: node.type });
+        allMatches.push({ id: node.id, name: node.name, type: node.type });
         return false;
     });
-    return { matches, totalFound: matches.length, limitReached: matches.length >= maxResults };
+    if (allMatches.length > limit)
+        hasMore = true;
+    const matches = allMatches.slice(offset, offset + maxResults);
+    return { matches, totalFound: allMatches.length, offset, hasMore };
 }
 function handleGroupNodes(payload) {
     if (!payload.nodeIds || payload.nodeIds.length < 1) {

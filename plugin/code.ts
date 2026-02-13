@@ -102,6 +102,8 @@ async function executeCommand(cmd: Command): Promise<unknown> {
       return handleDeleteNodes(cmd.payload);
     case 'get_node_info':
       return handleGetNodeInfo(cmd.payload);
+    case 'get_nodes_info':
+      return handleGetNodesInfo(cmd.payload);
     case 'list_pages':
       return handleListPages();
     case 'set_current_page':
@@ -559,14 +561,52 @@ function collectNodeInfo(node: BaseNode): Record<string, unknown> {
     info.characters = t.characters;
     info.fontSize = safeValue(t.fontSize);
     info.fontName = safeValue(t.fontName);
+    if (isMixed(t.fontSize) || isMixed(t.fontName) || isMixed(t.fills)) {
+      info.segments = extractTextSegments(t);
+    }
   }
 
   return info;
 }
 
+function extractTextSegments(textNode: TextNode): unknown[] {
+  const fields: Array<'fontName' | 'fontSize' | 'fills' | 'textDecoration' | 'textCase' | 'lineHeight' | 'letterSpacing'> =
+    ['fontName', 'fontSize', 'fills', 'textDecoration', 'textCase', 'lineHeight', 'letterSpacing'];
+  const segments = textNode.getStyledTextSegments(fields);
+  return segments.map(seg => ({
+    start: seg.start,
+    end: seg.end,
+    characters: seg.characters,
+    fontName: seg.fontName,
+    fontSize: seg.fontSize,
+    fills: seg.fills,
+    textDecoration: seg.textDecoration,
+    textCase: seg.textCase,
+    lineHeight: seg.lineHeight,
+    letterSpacing: seg.letterSpacing,
+  }));
+}
+
 function handleGetNodeInfo(payload: { nodeId: string }): unknown {
   const node = requireNode(payload.nodeId);
   return collectNodeInfo(node);
+}
+
+function handleGetNodesInfo(payload: { nodeIds: string[] }): unknown {
+  const results: Array<{ nodeId: string; success: boolean; data?: Record<string, unknown>; error?: string }> = [];
+  for (const nodeId of payload.nodeIds) {
+    try {
+      const node = figma.getNodeById(nodeId);
+      if (!node) {
+        results.push({ nodeId, success: false, error: 'Node not found' });
+        continue;
+      }
+      results.push({ nodeId, success: true, data: collectNodeInfo(node) });
+    } catch (err: any) {
+      results.push({ nodeId, success: false, error: err.message });
+    }
+  }
+  return { results };
 }
 
 function handleListPages(): unknown {
@@ -792,8 +832,10 @@ function handleCreateFromSvg(payload: { svg: string; x?: number; y?: number }): 
   };
 }
 
-function handleFindNodes(payload: { query?: string; type?: string; parentNodeId?: string; maxResults?: number }): unknown {
+function handleFindNodes(payload: { query?: string; type?: string; parentNodeId?: string; maxResults?: number; offset?: number }): unknown {
   const maxResults = payload.maxResults || 100;
+  const offset = payload.offset || 0;
+  const limit = offset + maxResults;
   const root = payload.parentNodeId
     ? requireNode(payload.parentNodeId)
     : figma.currentPage;
@@ -803,17 +845,24 @@ function handleFindNodes(payload: { query?: string; type?: string; parentNodeId?
   const queryLower = payload.query?.toLowerCase();
   const typeFilter = payload.type?.toUpperCase();
 
-  const matches: Array<{ id: string; name: string; type: string }> = [];
+  const allMatches: Array<{ id: string; name: string; type: string }> = [];
+  let hasMore = false;
 
   (root as PageNode | FrameNode).findAll((node: SceneNode) => {
-    if (matches.length >= maxResults) return false;
+    if (allMatches.length > limit) {
+      hasMore = true;
+      return false;
+    }
     if (typeFilter && node.type !== typeFilter) return false;
     if (queryLower && !node.name.toLowerCase().includes(queryLower)) return false;
-    matches.push({ id: node.id, name: node.name, type: node.type });
+    allMatches.push({ id: node.id, name: node.name, type: node.type });
     return false;
   });
 
-  return { matches, totalFound: matches.length, limitReached: matches.length >= maxResults };
+  if (allMatches.length > limit) hasMore = true;
+  const matches = allMatches.slice(offset, offset + maxResults);
+
+  return { matches, totalFound: allMatches.length, offset, hasMore };
 }
 
 function handleGroupNodes(payload: { nodeIds: string[] }): unknown {

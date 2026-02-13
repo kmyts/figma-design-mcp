@@ -57,10 +57,30 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const result = await enqueueCommand(name, args);
 
-    // For export_node, save base64 to disk and return file path instead
+    // For export_node, handle the base64 result
     if (name === 'export_node' && result && typeof result === 'object' && 'data' in result) {
       const exportResult = result as { nodeId: string; name: string; format: string; size: number; data: string };
       const outputPath = (args as Record<string, unknown>)?.outputPath as string | undefined;
+
+      // SVG: return inline if small enough, otherwise save to disk
+      const SVG_INLINE_MAX = 100_000; // 100KB threshold
+      if (exportResult.format === 'SVG' && !outputPath) {
+        const svg = Buffer.from(exportResult.data, 'base64').toString('utf-8');
+        if (svg.length <= SVG_INLINE_MAX) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              nodeId: exportResult.nodeId,
+              name: exportResult.name,
+              format: 'SVG',
+              size: svg.length,
+              svg,
+            }, null, 2) }],
+          };
+        }
+        // SVG too large for inline — fall through to save to disk
+      }
+
+      // Binary formats (PNG, JPG, PDF) or SVG with explicit outputPath: save to disk
       const saved = saveExportToDisk(exportResult, outputPath);
       return {
         content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }],
